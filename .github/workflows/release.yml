@@ -90,7 +90,7 @@ jobs:
             FOLDER="$RUNNER_TEMP/update-$ARCH"
             mkdir -p "$FOLDER"
             cp "dist/KAZAK-studio-$VERSION-$ARCH.zip" "$FOLDER/"
-            printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" --ed-key-file - --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" --link "https://github.com/$GITHUB_REPOSITORY/releases" "$FOLDER"
+            printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" --ed-key-file - -o "$FOLDER/appcast.xml" --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" --link "https://github.com/$GITHUB_REPOSITORY/releases" "$FOLDER"
             grep -q 'sparkle:edSignature=' "$FOLDER/appcast.xml" || { echo "Unsigned Sparkle feed for $ARCH; check the private/public key pair." >&2; exit 1; }
             cp "$FOLDER/appcast.xml" "updates/appcast-$ARCH.xml"
           done
