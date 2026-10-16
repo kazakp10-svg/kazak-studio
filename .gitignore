@@ -1,0 +1,17 @@
+node_modules/
+.local/
+.impeccable/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.dmg
+*.zip
+*.app/
+claude-studio/
+Сравнение версий KAZAK studio.md
+design-archive/
+research/
+.build/
+dist/

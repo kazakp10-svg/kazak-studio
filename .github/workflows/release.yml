@@ -1,0 +1,106 @@
+name: Релиз KAZAK studio
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+      - name: Проверить версию и ключ приложения
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          test "$VERSION" = "$(node -p "require('./package.json').version")" || { echo "Tag and package.json version differ." >&2; exit 1; }
+          test -n "$SPARKLE_PUBLIC_KEY" || { echo "Missing repository variable: SPARKLE_PUBLIC_KEY" >&2; exit 1; }
+      - run: npm ci
+      - run: swift build -c release
+      - name: Собрать приложение
+        env:
+          RELEASE_BUILD: "1"
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_FEED_URL: https://kazakp10-svg.github.io/kazak-studio/appcast-${{ matrix.arch }}.xml
+          APP_ARCH: ${{ matrix.arch }}
+        run: APP_VERSION="${GITHUB_REF_NAME#v}" node tools/build-app.mjs dist
+      - name: Подписать пакет приложения
+        run: |
+          set -euo pipefail
+          APP="dist/KAZAK studio.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/KAZAK-studio-${GITHUB_REF_NAME#v}-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: dist/KAZAK-studio-*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: macos-15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: mac-*
+          merge-multiple: true
+      - name: Проверить закрытый ключ обновлений
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PRIVATE_KEY" || { echo "Missing GitHub Actions secret: SPARKLE_PRIVATE_KEY" >&2; exit 1; }
+      - name: Подготовить подписанные ленты обновлений
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz" -o "$RUNNER_TEMP/Sparkle.tar.xz"
+          mkdir -p "$RUNNER_TEMP/Sparkle"
+          tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/Sparkle"
+          GENERATE_APPCAST="$(find "$RUNNER_TEMP/Sparkle" -type f -name generate_appcast -perm -111 -print -quit)"
+          test -n "$GENERATE_APPCAST" || { echo "Sparkle generate_appcast tool was not found." >&2; exit 1; }
+          mkdir -p updates
+          for ARCH in arm64 x86_64; do
+            FOLDER="$RUNNER_TEMP/update-$ARCH"
+            mkdir -p "$FOLDER"
+            cp "dist/KAZAK-studio-$VERSION-$ARCH.zip" "$FOLDER/"
+            printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" --ed-key-file - --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" --link "https://github.com/$GITHUB_REPOSITORY/releases" "$FOLDER"
+            grep -q 'sparkle:edSignature=' "$FOLDER/appcast.xml" || { echo "Unsigned Sparkle feed for $ARCH; check the private/public key pair." >&2; exit 1; }
+            cp "$FOLDER/appcast.xml" "updates/appcast-$ARCH.xml"
+          done
+      - name: Опубликовать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/KAZAK-studio-*.zip --title "KAZAK studio ${GITHUB_REF_NAME#v}" --notes-file CHANGELOG.md
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: updates
+      - id: deployment
+        uses: actions/deploy-pages@v4
